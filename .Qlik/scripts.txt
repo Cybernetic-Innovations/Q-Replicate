@@ -1,0 +1,501 @@
+preinstall scriptlet (using /bin/sh):
+# must be root to install/upgrade/remove rpm
+if [ "`whoami`" != root ]
+then
+	echo "[31mYou must be root to un/install or upgrade this rpm, exiting.[m"
+	exit 42
+fi
+
+# check for systemctl for handling services
+if ! systemctl >> /dev/null 2>&1 
+then 
+	echo "[31mThis rpm is not supported on your system (no systemctl), exiting.[m"
+	exit 43
+fi
+
+[ "${debug}" ] && set -vx && verbose=true
+
+# $1 is a unix command whose output is not interesting unless in debug mode
+function debug()
+{
+	if [ "${debug}" ]
+	then
+		eval debug=true verbose=true $1
+	else
+		eval verbose=$verbose $1 >> /dev/null 2>&1
+	fi
+}
+
+# $1 is a message when some verbosity is desired
+function verbose()
+{
+	[ "${verbose}" ] && echo $1
+	true
+}
+
+# $1 is a port number to validate
+function validate_port
+{
+	# validate usage
+	if [ ! $# = 1 ]
+	then
+		echo -n "[31mNo port number was provided[m"
+		return 1
+	fi
+
+	# port number must be a decimal number
+	if [[ ! "$1" =~ ^[1-9][0-9]*$ ]]
+	then
+		echo -n "[31mInvalid port number $1[m"
+		return 1
+	fi
+
+	# can't use a port below 1024
+	if [ "$1" -lt 1024 ]
+	then
+		echo -n "[31mPort number $1 is below 1024[m"
+		return 1
+	fi
+
+	# can't use a port above 65535
+	if [ "$1" -gt 65535 ]
+	then
+		echo -n "[31mPort number $1 is above 65535[m"
+		return 1
+	fi
+
+	return 0
+}
+
+# to change default behavior uncomment the following line
+#noaddusergroup=true
+
+verbose "pre install ..."
+
+case $1 in
+        1)      # first time installation
+				if [ ! -e "$RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt" ]
+               	then
+					verbose "new installation ..."
+				else
+					verbose "reinstallation ..."
+
+					# ignore pass=password for reinstall !!
+					# otherwise all instance passwords would be reset to the same password :-(
+					# and conflicts with logic for setting one-time-pass for new instance
+					if [ ! -z "$pass" ]
+					then
+						echo "[33minfo: ignoring password for reinstall[m"
+						unset pass
+					fi
+				fi
+
+                # set the username and group using default values or command line values
+				case "$noaddusergroup" in
+					"")		REP_USER=${user:-attunity}
+                			REP_GROUP=${group:-attunity}
+							;;
+					true)	if [ -z "$user" ] || [ -z "$group" ]
+							then
+								echo "[31muser or group not specified, exiting[m"
+								exit 23
+							fi
+							REP_USER=$user
+                			REP_GROUP=$group
+							;;
+					*)		echo "[31minvalid value for noaddusergroup, exiting[m"
+							exit 24
+							;;
+				esac
+
+				# validate command line ports
+				if [ ! -z "$iport" ] || [ ! -z "$rport" ]
+				then
+					if [ -e "$RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt" ]  # reinstall
+					then
+						echo "[33minfo: ignoring port number(s) for reinstall[m"
+						unset iport rport
+						break
+					fi
+	
+					verbose "validating port(s) ..."
+					for port in $iport $rport
+					do
+						validate_port $port 
+						if [ $? != 0 ]
+						then
+							echo "[31m, exiting[m" 
+							exit 11
+						fi
+					done
+				fi
+
+				# iport and rport can't be the same
+				if [ ! -z "$rport" ] && [ ! -z "$iport" ] && [ "$iport" = "$rport" ]
+				then
+					echo "[31mThe REST port and internal port shouldn't be the same, exiting[m"
+					exit 12
+				fi
+
+                ;;
+        2)      # upgrade
+                verbose "upgrade ..."
+
+				# ignore pass=password for upgrade !!
+				# otherwise all instance passwords would be reset to the same password :-(
+				# and conflicts with logic for setting one-time-pass for new instance
+				if [ ! -z "$pass" ]
+				then
+					echo "[33minfo: ignoring password for upgrade[m"
+					unset pass
+				fi
+
+				# ignore ports if specified
+				if [ ! -z "$iport" ] || [ ! -z "$rport" ]
+				then
+					echo "[33minfo: ignoring port number(s) for upgrade[m"
+					unset iport rport	# not technically necessary but ...
+				fi
+
+				# ignore data directory if specified
+				if [ ! -z "$data" ] 
+				then
+					echo "[33minfo: ignoring data directory for upgrade[m"
+					unset data	# not technically necessary but ...
+				fi
+
+				current_inst_dir=`rpm -ql areplicate | head -1 | sed "s:/attunity/replicate::"`				
+				verbose "current_inst_dir = $current_inst_dir"
+				# upgrade must not use --prefix if previous installation didn't
+				if [ "/opt" != "$RPM_INSTALL_PREFIX" ] && [ "$current_inst_dir" = "/opt" ]
+				then
+					echo "[31mService is installed in $current_inst_dir, rerun without --prefix[m"
+					exit 5
+				fi
+				# upgrade must use --prefix if previous installation did
+				if [ "$current_inst_dir" != "$RPM_INSTALL_PREFIX" ]
+				then
+					echo "[31mService is installed in $current_inst_dir, rerun upgrade with --prefix $current_inst_dir[m"
+					exit 6
+				fi
+
+                # upgrade, set the username and group to those used for existing installation
+                REP_USER=`stat -c %U $RPM_INSTALL_PREFIX/attunity/replicate`
+                REP_GROUP=`stat -c %G $RPM_INSTALL_PREFIX/attunity/replicate`
+				# and now override with command line arg values if supplied
+                REP_USER=${user:-$REP_USER}
+                REP_GROUP=${group:-$REP_GROUP}
+				
+                # uninstall service(s) before upgrade
+                verbose "uninstalling (soft) service(s) ..."
+				stop_status=0
+				for srvc in `awk '{print $1}' $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt`
+				do
+					verbose "uninstalling (soft) service $srvc ..."
+        			verbose=$verbose $RPM_INSTALL_PREFIX/attunity/replicate/bin/$srvc uninstall=soft
+					if  [ $? != 0 ]
+					then
+						echo "[31mService $srvc failed to uninstall[m"
+						stop_status=1
+					fi
+				done
+				if [ "$stop_status" != 0 ]
+				then
+					echo "[31mFailed to stop/uninstall (all) service(s), aborting upgrade[m"
+					exit 13
+				fi
+                sleep 4
+
+				# maintain fips libs if they exist
+				fips_libs=(`ls /opt/attunity/replicate/lib/libwolf* 2> /dev/null`)
+				for f in ${fips_libs[*]}
+				do
+					verbose "saving fips lib ${f}"
+					cp ${f} /tmp
+				done
+				;;
+esac
+
+# with the addition of 'noaddusergroup', 'nocredentials becomes obsolete
+# hopefully we can delete it some day
+if [ "$nocredentials" = true ]
+then
+	if [ "$noaddusergroup" = true ]
+	then
+		echo "[31mchoose either nocredentials OR noaddusergroup, aborting installation[m"
+		exit 23
+	fi
+		
+	verbose "nocredentials set to true - skipping check for user/group"
+else
+	# check if specified (or default) group exists
+	debug "getent group $REP_GROUP"
+	if [ $? != 0 ]
+	then
+		if [ "$noaddusergroup" = true ]
+		then
+			echo "[31mgroup $REP_GROUP does not exist, aborting installation[m"
+			exit 21
+		fi
+			
+		# create installation user's group if it doesn't exist
+		verbose "creating group $REP_GROUP"
+		groupadd $REP_GROUP
+		if [ $? = 0 ]
+		then
+			verbose "group $REP_GROUP was created successfully"
+		else
+			echo "[31mfailed to create group $REP_GROUP, aborting installation[m"
+			exit 1
+		fi
+	fi
+
+	# check if specified (or default) user exists
+	debug "getent passwd $REP_USER"
+	if [ $? != 0 ]
+	then
+		if [ "$noaddusergroup" = true ]
+		then
+			echo "[31muser $REP_USER does not exist, aborting installation[m"
+			exit 22
+		fi
+			
+		# create installation user if it doesn't exist
+		verbose "creating user $REP_USER (group=$REP_GROUP)"
+		useradd -g $REP_GROUP $REP_USER
+		if [ $? = 0 ]
+		then
+			verbose "user $REP_USER ($REP_GROUP) was created successfully"
+		else
+			echo "[31mfailed to create user $REP_USER ($REP_GROUP), aborting installation[m"
+			exit 2
+		fi
+	fi
+fi
+
+verbose "user=$REP_USER"
+verbose "group=$REP_GROUP"
+
+# for post chown
+echo "REP_USER=$REP_USER"    > /tmp/areplicate.dat
+echo "REP_GROUP=$REP_GROUP" >> /tmp/areplicate.dat
+postinstall scriptlet (using /bin/sh):
+[ "${debug}" ] && set -vx && verbose=true 
+
+# $1 is a unix command whose output is not interesting unless in debug mode
+function debug()
+{
+    if [ "${debug}" ]
+    then
+        eval debug=true verbose=true $1
+    else
+        eval verbose=$verbose $1 >> /dev/null 2>&1
+    fi
+}
+
+# $1 is a message when some verbosity is desired
+function verbose()
+{
+    [ "${verbose}" ] && echo $1
+    true
+}
+
+verbose "post install ..."
+
+# aargh - remove old tmp directory if it exists
+debug "rm -rf $RPM_INSTALL_PREFIX/attunity/replicate/tmp"
+
+# create site_arep_login.sh if it does not exist
+site_file=$RPM_INSTALL_PREFIX/attunity/replicate/bin/site_arep_login.sh
+if [ ! -e "$site_file" ]
+then
+	verbose "creating $site_file"
+	echo "# enter site specific settings here" > $site_file
+fi
+
+# remove empty repctl.cfg if it exists - i.e. RDSMigrationTool
+repctl_cfg=$RPM_INSTALL_PREFIX/attunity/replicate/bin/repctl.cfg
+if [ ! -s "$repctl_cfg" ]
+then
+	rm -f $reptcl_cfg
+fi
+
+# set the username and group
+. /tmp/areplicate.dat
+verbose "changing ownership of $RPM_INSTALL_PREFIX/attunity/replicate to ${REP_USER}:${REP_GROUP}"
+chown -R ${REP_USER}:${REP_GROUP} $RPM_INSTALL_PREFIX/attunity/replicate
+rm -f /tmp/areplicate.dat
+
+# setup and install as service and [re]start services(s)
+if [ -e "$RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt" ] 	# upgrade or reinstall
+then
+	verbose "reinstalling service(s) using $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt ..."
+	for srvc in `awk '{print $1}' $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt`
+	do
+		verbose "installing $srvc as a service ..."
+		iport=`grep "^$srvc " $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt | awk '{print $2}'`
+		rport=`grep "^$srvc " $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt | awk '{print $3}'`
+		data=`grep  "^$srvc " $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt | awk '{print $4}'`
+		user=`grep  "^$srvc " $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt | awk '{print $5}'`
+
+		# if new user specified for upgrade or for reinstallation
+		if [ "$user" != root ] && [ "$user" != "${REP_USER}" ]
+		then
+			sed -i "s/\(^$srvc .* \)$user/\1${REP_USER}/" $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt
+			user=${REP_USER}
+		fi
+		chown -R ${REP_USER}:${REP_GROUP} $data
+
+		if [ "$user" = root ]
+		then
+			msg=" a service"
+			verbose=$verbose iport=$iport rport=$rport data=$data reuse=yes $RPM_INSTALL_PREFIX/attunity/replicate/bin/arep.sh install $srvc
+		else
+			msg=" an instance"
+			su - $user -c "verbose=$verbose iport=$iport rport=$rport data=$data reuse=yes $RPM_INSTALL_PREFIX/attunity/replicate/bin/arep.sh install $srvc"
+		fi	
+		if [ $? != 0 ]
+		then
+			echo "[31mFailed to install $srvc as $msg[m"
+			exit 8
+		fi
+		chown -R ${REP_USER}:${REP_GROUP} $RPM_INSTALL_PREFIX/attunity/replicate/bin/$srvc
+	done
+else	# clean install 
+	verbose "installing areplicate as a service ..."
+
+	# determine ports
+	# if no ports specified on command line, use defaults
+	[ -z "$iport" ] && iport=3550
+	[ -z "$rport" ] && rport=3552
+
+	verbose=$verbose data=$data iport=$iport rport=$rport pass=$pass reuse=yes $RPM_INSTALL_PREFIX/attunity/replicate/bin/arep.sh install areplicate
+	if [ $? != 0 ]
+	then
+		echo "[31mFailed to install areplicate as a service, areplicate will not be run[m"
+		exit 9
+	fi
+	chown -R ${REP_USER}:${REP_GROUP} $RPM_INSTALL_PREFIX/attunity/replicate/bin/areplicate
+fi
+
+# notify if there is a newer config file, and the old one has been retained
+if [ -e "${repctl_cfg}.rpmnew" ]
+then
+	echo "[31mThere is a new configuration file to replace $repctl_cfg[m"
+	echo "[31mYou will have to merge your old configuration with the new file[m"
+	echo "[31mThe service(s) is(are) not being restarted[m"
+	echo "[31mSee documentation for instructions[m"
+else
+	if [ "$runservice" != false ]
+	then
+		exit_status=0
+		verbose "starting service(s) ..."
+		for srvc in `awk '{print $1}' $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt`
+		do
+			# inexplicably, service won't start after reinstall without this
+			debug "systemctl stop $srvc" 
+
+			verbose "starting service $srvc ..."
+			if [ -e /etc/systemd/system/${srvc}.service ] 
+			then
+				msg=service
+				debug "systemctl start $srvc"
+			else	# instance created by non root user
+				msg=instance
+				debug "$RPM_INSTALL_PREFIX/attunity/replicate/bin/$srvc start"
+			fi
+			if [ $? != 0 ]
+			then
+				echo "[31mFailed to start $msg $srvc[m"
+				exit_status=10
+			fi
+		done
+		if [ "$exit_status" = 10 ] 
+		then
+			echo "[31mNot all services have been started[m"
+			exit $exit_status
+		fi	
+	else
+		verbose "runservice=false - not re/starting service(s)"
+	fi
+fi
+preuninstall scriptlet (using /bin/sh):
+[ "${debug}" ] && set -vx && verbose=true 
+
+# $1 is a unix command whose output is not interesting unless in debug mode
+function debug()
+{
+    if [ "${debug}" ]
+    then
+        eval debug=true verbose=true $1
+    else
+        eval verbose=$verbose $1 >> /dev/null 2>&1
+    fi
+}
+
+# $1 is a message when some verbosity is desired
+function verbose()
+{
+    [ "${verbose}" ] && echo $1
+	true
+}
+
+verbose "pre uninstall ..."
+
+# uninstall service(s) for rpm uninstall 
+if [ $1 = 0 ]
+then
+	verbose "uninstalling (soft) service(s) ..."
+	for srvc in `awk '{print $1}' $RPM_INSTALL_PREFIX/attunity/replicate/services_list.txt`
+	do
+		verbose "uninstalling (soft) service $srvc ..."
+		debug "$RPM_INSTALL_PREFIX/attunity/replicate/bin/$srvc uninstall=soft"
+		if  [ "$?" != 0 ]
+		then
+			echo "[33mService $srvc failed to uninstall[m"
+		fi
+	done
+fi
+postuninstall scriptlet (using /bin/sh):
+[ "${debug}" ] && set -vx && verbose=true 
+
+# $1 is a unix command whose output is not interesting unless in debug mode
+function debug()
+{
+    if [ "${debug}" ]
+    then
+        eval debug=true verbose=true $1
+    else
+        eval verbose=$verbose $1 >> /dev/null 2>&1
+    fi
+}
+
+# $1 is a message when some verbosity is desired
+function verbose()
+{
+    [ "${verbose}" ] && echo $1
+    true
+}
+
+verbose "post uninstall ..."
+
+# for uninstall, not upgrade
+if [ $1 = 0 ]
+then	
+	if [ "${clean}" = true ]
+	then
+		verbose "removing installation directory $RPM_INSTALL_PREFIX/attunity/replicate ..."
+		debug "rm -rf $RPM_INSTALL_PREFIX/attunity/replicate"
+	fi
+
+	# aargh
+	debug "rm -rf $RPM_INSTALL_PREFIX/attunity/replicate/tmp"
+fi
+
+# reinstate fips libs post upgrade, if they exist
+fips_libs=(`ls /tmp/libwolf* 2> /dev/null`)
+for f in ${fips_libs[*]}
+do
+	verbose "reinstating fips lib ${f}"
+	mv ${f} /opt/attunity/replicate/lib/
+done

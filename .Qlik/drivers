@@ -1,0 +1,14 @@
+# Drivers to be installed
+#postgres9.5=
+mysql5.3=mysql-connector-odbc-5.3.10-1.el7.x86_64.rpm
+#snow3.31=snowflake-odbc-3.1.1.x86_64.rpm
+
+# Not installed
+#redshift=AmazonRedshiftODBC-64-bit-1.4.34.1000-1.x86_64.rpm
+#sqlserver13.1=msodbcsql-13.1.9.2-1.x86_64.rpm
+#oracle19.14=oracle1914_linux_x86_64.zip
+#db2i=ibm-iaccess-1.1.0.26-1.0.x86_64.rpm
+#oracle12.1=linuxamd64_12102_client.zip
+#db2luw11.1=DB2_ESE_AUSI_Svr_11.1_Linux_86-64.tar.gz
+#oracle19.3=oracle-instantclient19.3-basic-19.3.0.0.0-1.x86_64.rpm
+
