@@ -8,3 +8,6 @@ Sample to create Qlik-Replicate base image to run in OpenShift
 - **_packages_**
   - Versions of packages used to build the images
     - The *_fileMerge, *_fileSplit.py files are used to split/merge package so it can be stored in GitHub
+- **_artifactory_**
+  - Repository configuration file
+    - Modify as needed to add repo info to image 
