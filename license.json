@@ -1,0 +1,16 @@
+{
+    "cmd.license": {
+        "license_type": "TERM_LICENSE",
+        "licensed_to": "AnyCompany US",
+        "licensed_by": "Attunity US",
+        "serial_no": "",
+        "expiration_date": "2050-01-01",
+        "hosts": "",
+        "source_types": "SQLServer,MongoDB,Oracle,PostgreSQL,DB2zOS,IMS,VSAM,ODBC,OdbcWithCdc,File,FileChannel",
+        "target_types": "",
+        "features": "",
+        "version": "7.0",
+        "issue_date": "2025-01-01",
+        "checksum": "FC95R-F379J-KK7R7-36F83"
+    }
+}
