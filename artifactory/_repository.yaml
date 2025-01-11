@@ -3,6 +3,6 @@ repo:
   appcode: "CyInn"
   name: "Qlik Replicate - Base Images"
   description: "Base Qlik Replicate Image"
-  vcs: "*** Not Configured ***"
+  vcs: "https://github.com/Cybernetic-Innovations/Q-Replicate"
   vendor: "Qlik"
   startdate: "10-November-2024"
